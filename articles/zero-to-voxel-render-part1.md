@@ -15,6 +15,8 @@ This series of blog posts is going to walk you through how to go from no knowled
 
 So, what does a low level graphics API do? Well, that has somewhat changed over the years as OpenGL has evolved and now given way to the next-generation graphics APIs. It used to be that OpenGL (or early versions of DirectX) were very much "fixed function" black boxes. The developer would pass them a set of vertices, information about the camera and lights, and tell it what style of shading they wanted to be applied, and the graphics API would do all the work of making that happen for them. However, that quickly became limiting as computer graphics became more and more complex and developers wanted more control over the details of how every aspect of the computations that were going on behind the scenes. Ultimately, that has left us with the next gen, "explicit" APIs (Vulkan, DirectX12, Metal), so called because they allow the developer unprecedented control over every little aspect of what the hardware is doing. This means that on the one hand, we can in theory squeak out every little oodle of performance from the hardware by specializing it specifically for our application's needs. On the other, though, it means that the developer needs to have knowledge of and understand every aspect of the device and API in order to take proper advantage of that control, and that the code is *very* wordy.
 
+So, our first goal is to be drawing a triangle, and we'll slowly build concepts and work up from there to create the rest of our renderer.
+
 # Setting Up
 
 If you're on Windows and intend to use the Vulkan backend as a target, installing the [LunarG Vulkan SDK](https://vulkan.lunarg.com/) will be helpful for debugging later.
@@ -135,3 +137,65 @@ The next thing we'll do is create an `Instance`. This can be seen as the equival
 ```rust
 let instance = back::Instance::create("voxel-renderer", 1);
 ```
+
+Now that we have our instance and window, we can create a "surface" to draw on. Since `hal` does not interface directly with any specific underlying windowing system, it instead needs some sort of abstract type that will represent a "thing" that it can draw on. This surface will be backed by the window we just created.
+
+```rust
+let mut surface = instance.create_surface(&window);
+```
+
+Now we get to an interesting part. At this point we need to pick which of the compatible "adapters" (in Vulkan terminology, "physical devices"), which represent either pieces of hardware or software implementations of the backend spec which are present in the current system. To get a list of these, we ask the instance to enumerate its adapters. This will return a `Vec` of the compatible `Adapter`s, which we can then iterate over and pick from. If you wish, you can query this adapter to find its capabilities and make sure it supports the things that your application needs. In our case, we'll just print out the info for each device and then just choose the first one in the list.
+
+First, though, we need to add a `use` statement before our `main` function. We'll bring the `hal::Instance` trait into scope, which will let us access the `enuerate_adapters` method on our instance.
+
+```rust
+use hal::{
+    Instance,
+};
+```
+
+Now we can add after our instance creation:
+
+```rust
+let mut adapters = instance.enumerate_adapters();
+
+for adapter in &adapters {
+    println!("{:?}", adapter.info);
+}
+
+let mut adapter = adapters.remove(0);
+```
+
+Alright! Now we have selected our adapter and are ready to start creating a "device."
+
+# Device and Queues
+
+In `hal`, a `Device` represents "logical" connections to an adapter. This `Device` is the primary interface for interacting with the physical adapter. In the future when we want to actually tell this device to do things for us, we will submit commands to queues provided by the device. These commands will be executed asynchronously, as the `Device` is able to process them. We can also affect the order and synchronization of these commands with various methods.
+
+For now, the important thing to understand is how these queues are structured. A `Device` will expose one or more `QueueFamily`s, and each `QueueFamily` will expose one or more `CommandQueue`s, which is what we can then submit commands to. A `QueueFamily` is a group of queues that exhibit the same *capabilities*. The capabilities a family can support are `Graphics`, `Compute`, and `Transfer`. `Graphics` and `Compute` are quite self explanatory, supporting drawing and compute pipeline operations respectively, and `Transer` capability represents the ability to transfer memory from the host (CPU) to device (GPU) and around on the device itself.
+
+The types of queues are `General`, `Graphics`, `Compute`, and `Transfer`. `General` queues can support all operations, `Graphics` queues can support `Graphics` and `Transfer` operations, `Compute` queues can support `Compute` and `Transfer` operations, and `Transfer` queues only support `Transfer` operations.
+
+`hal` groups queues into `QueueGroup`s, which are like `QueueFamily`s, and in fact do represent a group of queues from a specific `QueueFamily`, however a `QueueGroup` is strongly typed and ensures that all the queues inside it support a specific set of `Capability`s and are from a specific `QueueFamily`.
+
+Phew! Got all that? It's alright if you don't get everything yet, and don't be afraid to go back and review some, it's a lot to take in. One more thing to talk about before we jump back into the code is that in addition to checking if a `QueueFamily` supports certain capabilities, we can also check if some things support working with a certain `QueueFamily`. In this case, we want to check that our `QueueFamily` supports being able to present images to the `Surface` that we created earlier.
+
+With `hal`, we can create a `Device` and `QueueGroup` at the same time by using the `open_with` method on our adapter. This method takes two type parameters, one of which is for the function that gets passed in and which we can tell `rustc` to figure out for us, and the other which we must define ourselves, and it represents the type of capability that we want our queue group to have. In our case, we want to use the `Graphics` capability (which includes both `Graphics` and `Transfer` capabilities). The arguments to `open_with` are first the number of queues we want in our `QueueGroup` and then a function (in this case a closure) that will act as a "filter" for queue families. The argument is a `QueueFamily` and it should return a `bool` meaning whether or not this family is acceptable. We will use this to make sure the family supports presenting to our surface.
+
+Alright! Into the code. First we need to add to our `use` statement and add the `Surface` trait to the scope so that we can use the `supports_queue_family` method.
+
+```rust
+use hal::{
+    Instance, Surface,
+};
+```
+
+And now we create our device and queue group. We'll create a queue group with only one queue inside it for now.
+
+```rust
+let (mut device, mut queue_group) = adapter
+    .open_with::<_, hal::Graphics>(1, |family| surface.supports_queue_family(family))
+    .unwrap();
+```
+
+Well, for all that explanation, the code wasn't so bad at all!
