@@ -23,7 +23,20 @@ If you're on Windows and intend to use the Vulkan backend as a target, installin
 
 In addition, it's a good idea for any OS and backend to install [RenderDoc](https://renderdoc.org/), which is like a debugger for your graphics card, and is invaluable in trying to sort out weird bugs that will inevitably pop up when doing this sort of work.
 
-The first thing we're going to do is get our workspace set up. This is fairly simple, assuming you have Rust and Cargo installed:
+The first thing we're going to do is actually to download the `gfx` git repository and build the docs for `hal`. This is necessary because there is no published documentation on `docs.rs` or another public site. In the future, when you see a capitalized and code-formatted type like `Device` or `ChannelType`, you can look them up in the docs to find more information. To do this, we can first clone the `gfx` repo like so
+
+```sh
+git clone https://github.com/gfx-rs/gfx
+```
+
+Then we'll move into the `hal` directory and build the documentation like so (note that the `--open` flag should open the generated documentation automatically in your default web browser)
+
+```sh
+cd gfx/src/hal
+cargo doc --open
+```
+
+The next thing we'll do is get our workspace set up. This is fairly simple, assuming you have Rust and Cargo installed:
 
 ```sh
 cargo new --bin voxel-renderer
@@ -130,7 +143,7 @@ Next, we create a "WindowBuilder" which allows us to change various parameters a
 
 Then we actually create the window using `wb.build` and passing in the `events_loop` we created earlier. Hey Presto, we have a window! Next, we need to start the process of actually being able to draw to it.
 
-## Instance, Surface, Adapter
+# Instance, Surface, Adapter
 
 The next thing we'll do is create an `Instance`. This can be seen as the equivalent to a Vulkan Instance, and essentially represents backend-specific, per-application state. We won't be using it directly very much, but we do need to create it. Just below our window, we can add
 
@@ -180,7 +193,7 @@ The types of queues are `General`, `Graphics`, `Compute`, and `Transfer`. `Gener
 
 Phew! Got all that? It's alright if you don't get everything yet, and don't be afraid to go back and review some, it's a lot to take in. One more thing to talk about before we jump back into the code is that in addition to checking if a `QueueFamily` supports certain capabilities, we can also check if some things support working with a certain `QueueFamily`. In this case, we want to check that our `QueueFamily` supports being able to present images to the `Surface` that we created earlier.
 
-With `hal`, we can create a `Device` and `QueueGroup` at the same time by using the `open_with` method on our adapter. This method takes two type parameters, one of which is for the function that gets passed in and which we can tell `rustc` to figure out for us, and the other which we must define ourselves, and it represents the type of capability that we want our queue group to have. In our case, we want to use the `Graphics` capability (which includes both `Graphics` and `Transfer` capabilities). The arguments to `open_with` are first the number of queues we want in our `QueueGroup` and then a function (in this case a closure) that will act as a "filter" for queue families. The argument is a `QueueFamily` and it should return a `bool` meaning whether or not this family is acceptable. We will use this to make sure the family supports presenting to our surface.
+With `hal`, we can create a `Device` and `QueueGroup` at the same time by using the `open_with` method on our adapter. Technically this is sort of a shortcut for some intermediate steps, but it makes creating a `Device` and `QueueGroup` easy if we only need one queue family. We'll revisit the manual way later in the series. This method takes two type parameters, one of which is for the function that gets passed in and which we can tell `rustc` to figure out for us, and the other which we must define ourselves, and it represents the type of capability that we want our queue group to have. In our case, we want to use the `Graphics` capability (which includes both `Graphics` and `Transfer` capabilities). The arguments to `open_with` are first the number of queues we want in our `QueueGroup` and then a function (in this case a closure) that will act as a "filter" for queue families. The argument is a `QueueFamily` and it should return a `bool` meaning whether or not this family is acceptable. We will use this to make sure the family supports presenting to our surface.
 
 Alright! Into the code. First we need to add to our `use` statement and add the `Surface` trait to the scope so that we can use the `supports_queue_family` method.
 
@@ -199,3 +212,38 @@ let (mut device, mut queue_group) = adapter
 ```
 
 Well, for all that explanation, the code wasn't so bad at all!
+
+# Swapchain
+
+The next thing we'll do is create what's called a "swapchain". The reason we do this is to integrate drawing with the window and surface that we created earlier. In Vulkan (and `hal`), we could in theory create an application that displays nothing at all and simply saves its results out or does nothing at all with them. But, if we want to display something, we need to create a set of special images (which are behind the scenes simply buffers of memory), together called a "swapchain" into which we can render things if we want to actually display them to the screen. I'm going to take a detour at this point to explain the bigger picture of what we are doing as graphics programmers with these low level APIs.
+
+## The Graphics Pipeline
+
+Remember before how I said that early graphics APIs were basically fixed-function black boxes into which you would drive some input and get a result magically out the other side? Well, now we're going to jump into each of the steps involved, and see where and how we can change that magic box. Fundamentally, even the new, explicit, low-level graphics APIs are still essentially ways to set up the state of the hardware device (graphics card) and then tell it when and how to execute things.
+
+The graphics pipeline is the sequence of operations that take the inputs into the black box and turn them all the way into the pixel colors of the output image. The basic goal of a modern graphics pipeline is to turn a series of *primitives* (almost always *triangles*) into a set of *fragments*, which can be thought of as analogous to *pixels* in an image, and then to compute an output color for each of those fragments. When we later make a "draw" call, what is happening is that we're telling the graphics card to take the currently bound state of the graphics pipeline and execute each stage to produce an output. We can run multiple draw calls on the same pipeline, say, one per object in our scene (this is an inefficient way to do it, but it does work), and slowly build up the final output image. With `hal`, we can also create multiple different ways to set up the pipeline, which can draw different kinds of objects in different ways. We can even assemble multiple runs (draw calls) of different pipelines into "render passes," and then use the output of one render pass as part of the input for another render pass. The inputs to the pipeline can include 
+
+* Vertices, formatted into vertex buffers, which hold data about each vertex that can include position, color, texture coordinates, normals, and more.
+* Indices into the vertex buffer, allowing the reuse of vertex information. Since the pipeline only understands how to work with triangles, rendering a square would actually require six vertices to be passed to the gpu, forcing you to repeat two of the vertices' data. Using index buffers, we can instead just re-reference the same data inside the vertex buffer using its index.
+* Data buffers, which come in two basic types, Uniform and Storage, and can store data that is not unique to each vertex for use in different shaders
+* Images (also called *textures*), which can either be preloaded with completely static data fed into them from the CPU, or images that were the *output of a previous run of the graphics pipeline*. By doing so we can apply "post processing" effects and many other interesting things like HDR, bloom, tonemapping, and deferred rendering.
+
+Here is a diagram that shows each of the steps of the pipeline. Green boxes signify "fixed function" pieces--these are not programmable, though you can often modify their behavior by setting different pieces of their state--and yellow boxes represent fully programmable pieces of the pipeline.
+
+![graphics pipeline diagram](https://vulkan-tutorial.com/images/vulkan_simplified_pipeline.svg)
+
+In order to program the yellow pieces of the pipeline, we write things called *shaders*, which are just pieces of code that are able to be executed on the graphics card instead of on your CPU. We'll explore these in much more detail as we go deeper into this series. Here are descriptions of each of the stages in the pipeline:
+
+* The **input assembler** collects the raw vertex data from the buffers you specify and may also use an index buffer to repeat certain elements without having to duplicate the vertex data itself.
+* The **vertex shader** is run for every vertex and generally applies transformations to turn vertex positions from "model space" to "screen space." This basically means translating the 3d position of each vertex from its point in the world all the way to its final "2d" position on the screen (this is a bit of a simplification, but we'll discuss that later). It also passes per-vertex data down the pipeline.
+* The **tessellation shaders** allow you to subdivide geometry based on certain rules to increase the mesh quality. This is often used to make surfaces like brick walls and staircases look less flat when they are nearby.
+* The **geometry shader** is run on every primitive (triangle, line, point) and can discard it or output more primitives than came in. This is similar to the tessellation shader, but much more flexible. However, it is not used much in today's applications because the performance is not that good on most graphics cards except for Intel's integrated GPUs.
+* The **rasterization stage** discretizes the primitives into fragments. These are the pixel elements that fill their shape on the output image. Any fragments that fall outside the screen are discarded and the attributes outputted by the vertex shader are interpolated across the fragments, as shown in the figure (don't worry if you don't quite understand what this means yet). Usually the fragments that are behind other primitive fragments are also discarded here because of depth testing.
+* The **fragment shader** is invoked for every fragment that survives and determines which output image(s), also called "render targets" and/or "framebuffers," the fragments are written to and with which color and depth values. It can do this using the interpolated data from the vertex shader, which can include things like texture coordinates and normals for lighting, and much more.
+* The **color blending stage** applies operations to mix the output color of the fragment shader with the color that already exists in that pixel on the output image (framebuffer). Fragments can simply overwrite each other, add up or be mixed based upon transparency (alpha).
+
+The two stages that we will be paying the most attention to are the **vertex shader** and the **fragment shader**, as these are the two shaders that are required to output a color image.
+
+## Output Image, Framebuffer, Render Target
+
+All of these terms are describing essentially the same thing--one of possibly multiple output images from one "run" of the graphics pipeline.
