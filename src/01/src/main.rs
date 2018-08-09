@@ -87,7 +87,8 @@ fn main() {
     let swap_config = SwapchainConfig::new()
         .with_color(format)
         .with_image_count(capabilities.image_count.start)
-        .with_image_usage(i::Usage::COLOR_ATTACHMENT);
+        .with_image_usage(i::Usage::COLOR_ATTACHMENT)
+        .with_mode(presentation_mode);
 
     let (swapchain, backbuffer) = device.create_swapchain(
         &mut surface,
@@ -95,4 +96,26 @@ fn main() {
         None,
         &extent,
     );
+
+    let frame_images: Vec<_> = match backbuffer {
+        window::Backbuffer::Images(images) => {
+            images.into_iter()
+                .map(|image| {
+                    let image_view = device.create_image_view(
+                        &image,
+                        i::ViewKind::D2,
+                        format,
+                        f::Swizzle::NO,
+                        i::SubresourceRange {
+                            aspects: f::Aspects::COLOR,
+                            levels: 0..1,
+                            layers: 0..1,
+                        }
+                    );
+                    (image, image_view)
+                })
+                .collect()
+        },
+        _ => unimplemented!()
+    };
 }
